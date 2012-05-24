@@ -28,11 +28,9 @@ class RNN(object):
     real : linear output units, use mean-squared error
     binary : binary output units, use cross-entropy error
     softmax : single softmax out, use cross-entropy error
-    real-hybrid : guess the sign of the target
-                  cross-entropy error, weighted by magnitude
     """
     def __init__(self, input, n_in, n_hidden, n_out, activation=T.tanh,
-                 output_type='real', symbolic_softmax=False):
+                 output_type='real', use_symbolic_softmax=False):
 
         self.input = input
         self.activation = activation
@@ -42,15 +40,13 @@ class RNN(object):
         # use a symbolic softmax which is slightly slower than T.nnet.softmax
         # See: http://groups.google.com/group/theano-dev/browse_thread/
         # thread/3930bd5a6a67d27a
-        if symbolic_softmax:
+        if use_symbolic_softmax:
             def symbolic_softmax(x):
                 e = T.exp(x)
-                return e / T.sum(e, axis = 1).dimshuffle(0, 'x')
+                return e / T.sum(e, axis=1).dimshuffle(0, 'x')
             self.softmax = symbolic_softmax
         else:
             self.softmax = T.nnet.softmax
-
-        #TODO: Set dtype to theano.config.floatX
 
         # recurrent weights as a shared variable
         W_init = np.asarray(np.random.uniform(size=(n_hidden, n_hidden),
@@ -133,12 +129,6 @@ class RNN(object):
             # compute prediction as class whose probability is maximal
             self.y_out = T.argmax(self.p_y_given_x, axis=-1)
             self.loss = lambda y: self.nll_multiclass(y)
-        elif self.output_type == 'real-hybrid':
-            # weighted softmax
-            self.p_y_given_x = self.softmax(self.y_pred)
-
-            self.y_out = T.argmax(self.p_y_given_x, axis=-1)
-            self.loss = self.weighted_crossentropy
         else:
             raise NotImplementedError
 
@@ -164,20 +154,6 @@ class RNN(object):
         # i.e., the mean log-likelihood across the minibatch.
         return -T.mean(T.log(self.p_y_given_x)[T.arange(y.shape[0]), y])
 
-    def split_sign_magnitude(self, y):
-        """ Input are real-valued labels. Output is class 0, 1, 2 integers based on sign.
-        Also outputs magnitude. """
-        sgn = T.sgn(y)
-        return T.cast(T.switch(T.eq(sgn, -1), 2, sgn), dtype='int32'), T.abs_(y)
-
-    def weighted_crossentropy(self, y):
-        # predict the sign of the target
-        # cross-entropy error weighted by the magnitude
-        # convert -1 to class 2
-        labels, mag = self.split_sign_magnitude(y)
-        return -T.mean(mag * T.log(self.p_y_given_x)[T.arange(y.shape[0]),
-                                                     labels])
-
     def errors(self, y):
         """Return a float representing the number of errors in the sequence
         over the total number of examples in the sequence ; zero one
@@ -192,7 +168,6 @@ class RNN(object):
             raise TypeError('y should have the same shape as self.y_out',
                 ('y', y.type, 'y_out', self.y_out.type))
 
-
         if self.output_type in ('binary', 'softmax'):
             # check if y is of the correct datatype
             if y.dtype.startswith('int'):
@@ -200,16 +175,6 @@ class RNN(object):
                 # represents a mistake in prediction
                 return T.mean(T.neq(self.y_out, y))
             else:
-                raise NotImplementedError()
-        elif self.output_type == 'real-hybrid':
-            # check if y is of the correct datatype
-            if y.dtype.startswith('float'):
-                # y are real values
-                # however, we are interested in accuracy in predicting sign of y
-                labels, _ = self.split_sign_magnitude(y)
-                return T.mean(T.neq(self.y_out, labels))
-            else:
-                print y.dtype
                 raise NotImplementedError()
 
 
@@ -219,7 +184,7 @@ class MetaRNN(BaseEstimator):
                  activation='tanh', output_type='real',
                  final_momentum=0.9, initial_momentum=0.5,
                  momentum_switchover=5,
-                 symbolic_softmax=False):
+                 use_symbolic_softmax=False):
         self.n_in = int(n_in)
         self.n_hidden = int(n_hidden)
         self.n_out = int(n_out)
@@ -233,7 +198,7 @@ class MetaRNN(BaseEstimator):
         self.initial_momentum = float(initial_momentum)
         self.final_momentum = float(final_momentum)
         self.momentum_switchover = int(momentum_switchover)
-        self.symbolic_softmax = symbolic_softmax
+        self.use_symbolic_softmax = use_symbolic_softmax
 
         self.ready()
 
@@ -245,10 +210,8 @@ class MetaRNN(BaseEstimator):
             self.y = T.matrix(name='y', dtype=theano.config.floatX)
         elif self.output_type == 'binary':
             self.y = T.matrix(name='y', dtype='int32')
-        elif self.output_type =='softmax':  # only vector labels supported
+        elif self.output_type == 'softmax':  # only vector labels supported
             self.y = T.vector(name='y', dtype='int32')
-        elif self.output_type == 'real-hybrid':
-            self.y = T.vector(name='y', dtype=theano.config.floatX)
         else:
             raise NotImplementedError
         # initial hidden state of the RNN
@@ -270,7 +233,7 @@ class MetaRNN(BaseEstimator):
         self.rnn = RNN(input=self.x, n_in=self.n_in,
                        n_hidden=self.n_hidden, n_out=self.n_out,
                        activation=activation, output_type=self.output_type,
-                       symbolic_softmax=self.symbolic_softmax)
+                       use_symbolic_softmax=self.use_symbolic_softmax)
 
         if self.output_type == 'real':
             self.predict = theano.function(inputs=[self.x, ],
@@ -282,7 +245,7 @@ class MetaRNN(BaseEstimator):
             self.predict = theano.function(inputs=[self.x, ],
                                 outputs=T.round(self.rnn.p_y_given_x),
                                 mode=mode)
-        elif self.output_type in ('softmax', 'real-hybrid'):
+        elif self.output_type == 'softmax':
             self.predict_proba = theano.function(inputs=[self.x, ],
                         outputs=self.rnn.p_y_given_x, mode=mode)
             self.predict = theano.function(inputs=[self.x, ],
@@ -515,6 +478,8 @@ def test_real():
     fig = plt.figure()
     ax1 = plt.subplot(211)
     plt.plot(seq[0])
+    ax1.set_title('input')
+
     ax2 = plt.subplot(212)
     true_targets = plt.plot(targets[0])
 
@@ -522,6 +487,7 @@ def test_real():
     guessed_targets = plt.plot(guess, linestyle='--')
     for i, x in enumerate(guessed_targets):
         x.set_color(true_targets[i].get_color())
+    ax2.set_title('solid: true output, dashed: model output')
 
 
 def test_binary(multiple_out=False, n_epochs=250):
@@ -561,6 +527,7 @@ def test_binary(multiple_out=False, n_epochs=250):
         fig = plt.figure()
         ax1 = plt.subplot(211)
         plt.plot(seq[seq_num])
+        ax1.set_title('input')
         ax2 = plt.subplot(212)
         true_targets = plt.step(xrange(n_steps), targets[seq_num], marker='o')
 
@@ -570,6 +537,7 @@ def test_binary(multiple_out=False, n_epochs=250):
         for i, x in enumerate(guessed_targets):
             x.set_color(true_targets[i].get_color())
         ax2.set_ylim((-0.1, 1.1))
+        ax2.set_title('solid: true output, dashed: model output (prob)')
 
 
 def test_softmax(n_epochs=250):
@@ -599,7 +567,7 @@ def test_softmax(n_epochs=250):
     model = MetaRNN(n_in=n_in, n_hidden=n_hidden, n_out=n_out,
                     learning_rate=0.001, learning_rate_decay=0.999,
                     n_epochs=n_epochs, activation='tanh',
-                    output_type='softmax', symbolic_softmax=False)
+                    output_type='softmax', use_symbolic_softmax=False)
 
     model.fit(seq, targets, validation_frequency=1000)
 
@@ -610,6 +578,7 @@ def test_softmax(n_epochs=250):
         fig = plt.figure()
         ax1 = plt.subplot(211)
         plt.plot(seq[seq_num])
+        ax1.set_title('input')
         ax2 = plt.subplot(212)
 
         # blue line will represent true classes
@@ -619,63 +588,14 @@ def test_softmax(n_epochs=250):
         guess = model.predict_proba(seq[seq_num])
         guessed_probs = plt.imshow(guess.T, interpolation='nearest',
                                    cmap='gray')
-
-
-def test_real_hybrid(n_epochs=100):
-    n_hidden = 10
-    n_in = 5
-    n_steps = 10
-    n_seq = 100
-    n_classes = 3
-
-    np.random.seed(0)
-    # simple lag test
-    seq = np.random.randn(n_seq, n_steps, n_in)
-    targets = np.zeros((n_seq, n_steps))
-
-    targets[:, 1:] = seq[:, :-1, 3]  # delayed 1
-    #targets[:, 1:, 1] = seq[:, :-1, 2]  # delayed 1
-    #targets[:, 2:, 2] = seq[:, :-2, 0]  # delayed 2
-
-    targets += 0.01 * np.random.standard_normal(targets.shape)
-
-    model = MetaRNN(n_in=n_in, n_hidden=n_hidden, n_out=n_classes,
-                    learning_rate=0.001, learning_rate_decay=0.999,
-                    n_epochs=n_epochs, activation='tanh',
-                    output_type='real-hybrid')
-
-    model.fit(seq, targets, validation_frequency=1000)
-
-    seqs = xrange(10)
-
-    plt.close('all')
-    for seq_num in seqs:
-        fig = plt.figure()
-        ax1 = plt.subplot(311)
-        plt.plot(seq[seq_num])
-        ax2 = plt.subplot(312)
-
-        # blue line will represent true classes
-        #true_targets = plt.step(xrange(n_steps), targets[seq_num], marker='o')
-
-        true_targets = plt.plot(targets[seq_num])
-
-        ax3 = plt.subplot(313)
-        sgn = np.sign(targets[seq_num])  # get sign
-        cls = np.where(sgn==-1, 2, sgn)  # replace -1 with 2
-        true_targets=plt.step(xrange(n_steps), cls,
-                              marker='o')
-        # show probabilities (in b/w) output by model
-        guess = model.predict_proba(seq[seq_num])
-        guessed_probs = plt.imshow(guess.T, interpolation='nearest',
-                                   cmap='gray')
+        ax2.set_title('blue: true class, grayscale: probs assigned by model')
 
 
 if __name__ == "__main__":
     # logging.basicConfig(level=logging.INFO)
     t0 = time.time()
     test_real()
-    #test_binary(multiple_out=True, n_epochs=2400)  # problem is much harder
-    #test_softmax()
-    #test_real_hybrid(n_epochs=100)
+    # problem takes more epochs to solve
+    #test_binary(multiple_out=True, n_epochs=2400)
+    #test_softmax(n_epochs=250)
     print "Elapsed time: %f" % (time.time() - t0)

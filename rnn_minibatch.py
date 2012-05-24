@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 import matplotlib.pyplot as plt
 plt.ion()
 
-
 mode = theano.Mode(linker='cvm')
 #mode = 'DEBUG_MODE'
 
@@ -533,7 +532,6 @@ class MetaRNN(BaseEstimator):
             logger.info('... training')
             epoch = 0
 
-            t0 = time.time()
             while (epoch < self.n_epochs):
                 epoch = epoch + 1
                 effective_momentum = self.final_momentum \
@@ -550,8 +548,6 @@ class MetaRNN(BaseEstimator):
                     iter = (epoch - 1) * n_train_batches + minibatch_idx + 1
 
                     if iter % validation_frequency == 0:
-                        logger.info("Elapsed time: %f" % (time.time() - t0))
-                        t0 = time.time()
                         # compute loss on training set
                         train_losses = [compute_train_error(i, n_train)
                                         for i in xrange(n_train_batches)]
@@ -785,7 +781,7 @@ class MetaRNN(BaseEstimator):
             raise NotImplementedError
 
 
-def test_real():
+def test_real(n_epochs=1000):
     n_hidden = 10
     n_in = 5
     n_out = 3
@@ -806,7 +802,7 @@ def test_real():
 
     model = MetaRNN(n_in=n_in, n_hidden=n_hidden, n_out=n_out,
                     learning_rate=0.01, learning_rate_decay=0.999,
-                    n_epochs=1000, batch_size=n_seq, activation='tanh',
+                    n_epochs=n_epochs, batch_size=n_seq, activation='tanh',
                     L2_reg=1e-3)
 
     model.fit(seq, targets, validate_every=100, optimizer='bfgs')
@@ -815,6 +811,7 @@ def test_real():
     fig = plt.figure()
     ax1 = plt.subplot(211)
     plt.plot(seq[:, 0, :])
+    ax1.set_title('input')
     ax2 = plt.subplot(212)
     true_targets = plt.plot(targets[:, 0, :])
 
@@ -823,6 +820,7 @@ def test_real():
     guessed_targets = plt.plot(guess.squeeze(), linestyle='--')
     for i, x in enumerate(guessed_targets):
         x.set_color(true_targets[i].get_color())
+    ax2.set_title('solid: true output, dashed: model output')
 
 
 def test_binary(multiple_out=False, n_epochs=1000, optimizer='cg'):
@@ -865,6 +863,7 @@ def test_binary(multiple_out=False, n_epochs=1000, optimizer='cg'):
         fig = plt.figure()
         ax1 = plt.subplot(211)
         plt.plot(seq[:, seq_num, :])
+        ax1.set_title('input')
         ax2 = plt.subplot(212)
         true_targets = plt.step(xrange(n_steps), targets[:, seq_num, :],
                                 marker='o')
@@ -875,6 +874,7 @@ def test_binary(multiple_out=False, n_epochs=1000, optimizer='cg'):
         for i, x in enumerate(guessed_targets):
             x.set_color(true_targets[i].get_color())
         ax2.set_ylim((-0.1, 1.1))
+        ax2.set_title('solid: true output, dashed: model output (prob)')
 
 
 def test_softmax(n_epochs=250, optimizer='cg'):
@@ -917,6 +917,7 @@ def test_softmax(n_epochs=250, optimizer='cg'):
         fig = plt.figure()
         ax1 = plt.subplot(211)
         plt.plot(seq[:, seq_num])
+        ax1.set_title('input')
         ax2 = plt.subplot(212)
 
         # blue line will represent true classes
@@ -927,13 +928,12 @@ def test_softmax(n_epochs=250, optimizer='cg'):
         guess = model.predict_proba(seq[:, seq_num][:, np.newaxis])
         guessed_probs = plt.imshow(guess.squeeze().T, interpolation='nearest',
                                    cmap='gray')
+        ax2.set_title('blue: true class, grayscale: probs assigned by model')
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     t0 = time.time()
-    test_real()
-    #print "Elapsed time: %f" % (time.time() - t0)
-    #t0 = time.time()
-    #test_binary(optimizer='sgd', n_epochs=100)
-    #test_softmax(n_epochs=100, optimizer='sgd')
+    test_real(n_epochs=1000)
+    #test_binary(optimizer='sgd', n_epochs=1000)
+    #test_softmax(n_epochs=250, optimizer='sgd')
     print "Elapsed time: %f" % (time.time() - t0)
