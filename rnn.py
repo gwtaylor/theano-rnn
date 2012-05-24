@@ -451,6 +451,7 @@ class MetaRNN(BaseEstimator):
 
 
 def test_real():
+    """ Test RNN with real-valued outputs. """
     n_hidden = 10
     n_in = 5
     n_out = 3
@@ -491,6 +492,7 @@ def test_real():
 
 
 def test_binary(multiple_out=False, n_epochs=250):
+    """ Test RNN with binary outputs. """
     n_hidden = 10
     n_in = 5
     if multiple_out:
@@ -541,6 +543,7 @@ def test_binary(multiple_out=False, n_epochs=250):
 
 
 def test_softmax(n_epochs=250):
+    """ Test RNN with softmax outputs. """
     n_hidden = 10
     n_in = 5
     n_steps = 10
@@ -592,7 +595,7 @@ def test_softmax(n_epochs=250):
 
 
 if __name__ == "__main__":
-    # logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO)
     t0 = time.time()
     test_real()
     # problem takes more epochs to solve

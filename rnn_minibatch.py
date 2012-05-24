@@ -782,6 +782,7 @@ class MetaRNN(BaseEstimator):
 
 
 def test_real(n_epochs=1000):
+    """ Test RNN with real-valued outputs. """
     n_hidden = 10
     n_in = 5
     n_out = 3
@@ -824,6 +825,7 @@ def test_real(n_epochs=1000):
 
 
 def test_binary(multiple_out=False, n_epochs=1000, optimizer='cg'):
+    """ Test RNN with binary outputs. """
     n_hidden = 10
     n_in = 5
     if multiple_out:
@@ -878,6 +880,7 @@ def test_binary(multiple_out=False, n_epochs=1000, optimizer='cg'):
 
 
 def test_softmax(n_epochs=250, optimizer='cg'):
+    """ Test RNN with softmax outputs. """
     n_hidden = 10
     n_in = 5
     n_steps = 10
@@ -929,6 +932,7 @@ def test_softmax(n_epochs=250, optimizer='cg'):
         guessed_probs = plt.imshow(guess.squeeze().T, interpolation='nearest',
                                    cmap='gray')
         ax2.set_title('blue: true class, grayscale: probs assigned by model')
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

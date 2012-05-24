@@ -1,13 +1,18 @@
-""" Sanity check dataset: RNN trained with hf optimizer
-PYTHONPATH=$HOME/python/theano-hf:$PYTHONPATH ipython -i hf_example.py
+"""
+This code uses the recurrent neural net implementation in rnn.py
+but trains it using Hessian-Free optimization.
+
+It requires the theano-hf package:
+https://github.com/boulanni/theano-hf
+
 """
 from rnn import MetaRNN
 from hf import SequenceDataset, hf_optimizer
 import numpy as np
 import matplotlib.pyplot as plt
+import logging
 
-
-def test_real():
+def test_real(n_updates=100):
     """ Test RNN with real-valued outputs. """
     n_hidden = 10
     n_in = 5
@@ -43,12 +48,13 @@ def test_real():
                        s=model.rnn.y_pred,
                        costs=[model.rnn.loss(model.y)], h=model.rnn.h)
 
-    opt.train(gradient_dataset, cg_dataset)
+    opt.train(gradient_dataset, cg_dataset, num_updates=n_updates)
 
     plt.close('all')
     fig = plt.figure()
     ax1 = plt.subplot(211)
     plt.plot(seq[0])
+    ax1.set_title('input')
     ax2 = plt.subplot(212)
     true_targets = plt.plot(targets[0])
 
@@ -56,10 +62,11 @@ def test_real():
     guessed_targets = plt.plot(guess, linestyle='--')
     for i, x in enumerate(guessed_targets):
         x.set_color(true_targets[i].get_color())
+    ax2.set_title('solid: true output, dashed: model output')
 
 
 def test_binary(multiple_out=False, n_updates=250):
-    """ Test RNN with binary-valued outputs. """
+    """ Test RNN with binary outputs. """
     n_hidden = 10
     n_in = 5
     if multiple_out:
@@ -114,6 +121,7 @@ def test_binary(multiple_out=False, n_updates=250):
         fig = plt.figure()
         ax1 = plt.subplot(211)
         plt.plot(seq[seq_num])
+        ax1.set_title('input')
         ax2 = plt.subplot(212)
         true_targets = plt.step(xrange(n_steps), targets[seq_num], marker='o')
 
@@ -123,9 +131,11 @@ def test_binary(multiple_out=False, n_updates=250):
         for i, x in enumerate(guessed_targets):
             x.set_color(true_targets[i].get_color())
         ax2.set_ylim((-0.1, 1.1))
+        ax2.set_title('solid: true output, dashed: model output (prob)')
 
 
 def test_softmax(n_updates=250):
+    """ Test RNN with softmax outputs. """
     n_hidden = 10
     n_in = 5
     n_steps = 10
@@ -161,7 +171,7 @@ def test_softmax(n_updates=250):
 
     model = MetaRNN(n_in=n_in, n_hidden=n_hidden, n_out=n_out,
                     activation='tanh', output_type='softmax',
-                    symbolic_softmax=True)
+                    use_symbolic_softmax=True)
 
     # optimizes negative log likelihood
     # but also reports zero-one error
@@ -181,8 +191,9 @@ def test_softmax(n_updates=250):
         fig = plt.figure()
         ax1 = plt.subplot(211)
         plt.plot(seq[seq_num])
-        ax2 = plt.subplot(212)
+        ax1.set_title('input')
 
+        ax2 = plt.subplot(212)
         # blue line will represent true classes
         true_targets = plt.step(xrange(n_steps), targets[seq_num], marker='o')
 
@@ -190,8 +201,11 @@ def test_softmax(n_updates=250):
         guess = model.predict_proba(seq[seq_num])
         guessed_probs = plt.imshow(guess.T, interpolation='nearest',
                                    cmap='gray')
+        ax2.set_title('blue: true class, grayscale: probs assigned by model')
+
 
 if __name__ == "__main__":
-    # test_real()
+    logging.basicConfig(level=logging.INFO)
+    #test_real(n_updates=20)
     #test_binary(multiple_out=True, n_updates=20)
     test_softmax(n_updates=20)
