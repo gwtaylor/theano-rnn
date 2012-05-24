@@ -5,12 +5,15 @@ but trains it using Hessian-Free optimization.
 It requires the theano-hf package:
 https://github.com/boulanni/theano-hf
 
+@author Graham Taylor
+
 """
 from rnn import MetaRNN
 from hf import SequenceDataset, hf_optimizer
 import numpy as np
 import matplotlib.pyplot as plt
 import logging
+
 
 def test_real(n_updates=100):
     """ Test RNN with real-valued outputs. """
