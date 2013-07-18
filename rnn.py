@@ -334,8 +334,8 @@ class MetaRNN(BaseEstimator):
         Pass in X_test, Y_test to compute test error and report during
         training.
 
-        X_train : ndarray (T x n_in)
-        Y_train : ndarray (T x n_out)
+        X_train : ndarray (n_seq x n_steps x n_in)
+        Y_train : ndarray (n_seq x n_steps x n_out)
 
         validation_frequency : int
             in terms of number of sequences (or number of weight updates)
