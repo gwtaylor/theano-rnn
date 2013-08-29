@@ -113,7 +113,7 @@ class RNN(object):
         self.theta_update = theano.shared(
             value=np.zeros(theta_shape, dtype=theano.config.floatX))
 
-        # recurrent function (using tanh activation function) and linear output
+        # recurrent function (using tanh activation function) and arbitrary output
         # activation function
         def step(x_t, h_tm1):
             h_t = self.activation(T.dot(x_t, self.W_in) + \
@@ -125,6 +125,7 @@ class RNN(object):
         # entire sequence `y` (first dimension is always time)
         # Note the implementation of weight-sharing h0 across variable-size
         # batches using T.ones multiplying h0
+        # Alternatively, T.alloc approach is more robust
         [self.h, self.y_pred], _ = theano.scan(step,
                     sequences=self.input,
                     outputs_info=[T.alloc(self.h0, self.input.shape[1],

@@ -358,7 +358,7 @@ class MetaRNN(BaseEstimator):
         ######################
         logger.info('... building the model')
 
-        index = T.lscalar('index')    # index to a [mini]batch
+        index = T.lscalar('index')    # index to a case
         # learning rate (may change)
         l_r = T.scalar('l_r', dtype=theano.config.floatX)
         mom = T.scalar('mom', dtype=theano.config.floatX)  # momentum
