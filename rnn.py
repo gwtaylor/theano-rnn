@@ -11,6 +11,7 @@ import time
 import os
 import datetime
 import cPickle as pickle
+from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
@@ -254,9 +255,42 @@ class MetaRNN(BaseEstimator):
             raise NotImplementedError
 
     def shared_dataset(self, data_xy):
-        """ Load the dataset into shared variables """
+        """ Load the dataset into shared variables
+        Data is passed in a list [x, y]
+        x (y) can either be:
+         1) a n_seq x n_steps x n_in (n_out)
+            here each sequence is the same length
+         2) a list of n_steps x n_in (n_out) arrays
+            here data can be variable-length (n_steps varies per sequence)
+        """
+
 
         data_x, data_y = data_xy
+
+        if type(data_x) is list:
+            # variable length data, zero pad and store as array
+            assert(type(data_y)) is list
+            n_steps = [x.shape[0] for x in data_x]
+            max_n_steps = max(n_steps)
+            n_seq = len(data_x)
+            assert(len(data_y) == n_seq)
+            n_in = data_x[0].shape[1]
+            n_out = data_y[0].shape[1]
+            assert(max_n_steps == max(y.shape[0] for y in data_y))
+            data_x_p = np.zeros((n_seq, max_n_steps, n_in))
+            data_y_p = np.zeros((n_seq, max_n_steps, n_out))
+
+            for i in xrange(n_seq):
+                seq_len = data_x[i].shape[0]
+                data_x_p[i, :seq_len, :] = data_x[i]
+                data_y_p[i, :seq_len, :] = data_y[i]
+
+            data_x = data_x_p
+            data_y = data_y_p
+        else:
+            n_steps = data_x.shape[1] * np.ones((data_x.shape[0],))
+
+
         shared_x = theano.shared(np.asarray(data_x,
                                             dtype=theano.config.floatX))
 
@@ -264,9 +298,9 @@ class MetaRNN(BaseEstimator):
                                             dtype=theano.config.floatX))
 
         if self.output_type in ('binary', 'softmax'):
-            return shared_x, T.cast(shared_y, 'int32')
+            return shared_x, T.cast(shared_y, 'int32'), n_steps
         else:
-            return shared_x, shared_y
+            return shared_x, shared_y, n_steps
 
     def __getstate__(self):
         """ Return state sequence."""
@@ -343,11 +377,12 @@ class MetaRNN(BaseEstimator):
         if X_test is not None:
             assert(Y_test is not None)
             self.interactive = True
-            test_set_x, test_set_y = self.shared_dataset((X_test, Y_test))
+            test_set_x, test_set_y, n_steps_test = \
+                        self.shared_dataset((X_test, Y_test))
         else:
             self.interactive = False
 
-        train_set_x, train_set_y = self.shared_dataset((X_train, Y_train))
+        train_set_x, train_set_y, n_steps_train = self.shared_dataset((X_train, Y_train))
 
         n_train = train_set_x.get_value(borrow=True).shape[0]
         if self.interactive:
@@ -359,6 +394,8 @@ class MetaRNN(BaseEstimator):
         logger.info('... building the model')
 
         index = T.lscalar('index')    # index to a case
+        n_steps = T.lscalar('n_steps')  # sequence length for a case
+
         # learning rate (may change)
         l_r = T.scalar('l_r', dtype=theano.config.floatX)
         mom = T.scalar('mom', dtype=theano.config.floatX)  # momentum
@@ -367,19 +404,20 @@ class MetaRNN(BaseEstimator):
             + self.L1_reg * self.rnn.L1 \
             + self.L2_reg * self.rnn.L2_sqr
 
-        compute_train_error = theano.function(inputs=[index, ],
-                                              outputs=self.rnn.loss(self.y),
-                                              givens={
-                                                  self.x: train_set_x[index],
-                                                  self.y: train_set_y[index]},
-            mode=mode)
+        compute_train_error = theano.function(inputs=[index, n_steps],
+                                outputs=self.rnn.loss(self.y),
+                                givens={
+                                self.x: train_set_x[index,:n_steps],
+                                self.y: train_set_y[index,:n_steps]},
+                                mode=mode)
+
 
         if self.interactive:
-            compute_test_error = theano.function(inputs=[index, ],
+            compute_test_error = theano.function(inputs=[index, n_steps],
                         outputs=self.rnn.loss(self.y),
                         givens={
-                            self.x: test_set_x[index],
-                            self.y: test_set_y[index]},
+                            self.x: test_set_x[index, :n_steps],
+                            self.y: test_set_y[index, :n_steps]},
                         mode=mode)
 
         # compute the gradient of cost with respect to theta = (W, W_in, W_out)
@@ -389,7 +427,7 @@ class MetaRNN(BaseEstimator):
             gparam = T.grad(cost, param)
             gparams.append(gparam)
 
-        updates = {}
+        updates = OrderedDict()
         for param, gparam in zip(self.rnn.params, gparams):
             weight_update = self.rnn.updates[param]
             upd = mom * weight_update - l_r * gparam
@@ -399,12 +437,12 @@ class MetaRNN(BaseEstimator):
         # compiling a Theano function `train_model` that returns the
         # cost, but in the same time updates the parameter of the
         # model based on the rules defined in `updates`
-        train_model = theano.function(inputs=[index, l_r, mom],
+        train_model = theano.function(inputs=[index, n_steps, l_r, mom],
                                       outputs=cost,
                                       updates=updates,
                                       givens={
-                                          self.x: train_set_x[index],
-                                          self.y: train_set_y[index]},
+                                          self.x: train_set_x[index, :n_steps],
+                                          self.y: train_set_y[index, :n_steps]},
                                           mode=mode)
 
         ###############
@@ -419,7 +457,7 @@ class MetaRNN(BaseEstimator):
                 effective_momentum = self.final_momentum \
                                if epoch > self.momentum_switchover \
                                else self.initial_momentum
-                example_cost = train_model(idx, self.learning_rate,
+                example_cost = train_model(idx, n_steps_train[idx], self.learning_rate,
                                            effective_momentum)
 
                 # iteration number (how many weight updates have we made?)
@@ -428,12 +466,12 @@ class MetaRNN(BaseEstimator):
 
                 if iter % validation_frequency == 0:
                     # compute loss on training set
-                    train_losses = [compute_train_error(i)
+                    train_losses = [compute_train_error(i, n_steps_train[i])
                                     for i in xrange(n_train)]
                     this_train_loss = np.mean(train_losses)
 
                     if self.interactive:
-                        test_losses = [compute_test_error(i)
+                        test_losses = [compute_test_error(i, n_steps_test[i])
                                         for i in xrange(n_test)]
                         this_test_loss = np.mean(test_losses)
 
@@ -594,11 +632,62 @@ def test_softmax(n_epochs=250):
         ax2.set_title('blue: true class, grayscale: probs assigned by model')
 
 
+def test_real_varlen():
+    """ Test RNN with real-valued outputs.
+    Special case where the sequences are not the same length."""
+
+    n_hidden = 10
+    n_in = 5
+    n_out = 3
+    n_steps_min = 5
+    n_steps_max = 15
+    n_seq = 100
+
+    np.random.seed(0)
+    # simple lag test
+
+    # sample lengths for different sequences
+    n_steps = np.random.uniform(low=n_steps_min, high=n_steps_max,
+                                size=(n_seq,))
+
+    seq = [np.random.randn(n_steps[i], n_in) for i in n_steps]
+    targets = [np.zeros((n_steps[i], n_out)) for i in n_steps]
+
+    for t, s in zip(targets, seq):
+        t[1:, 0] = s[:-1, 3]  # delayed 1
+        t[1:, 1] = s[:-1, 2]  # delayed 1
+        t[2:, 2] = s[:-2, 0]  # delayed 2
+
+        t += 0.01 * np.random.standard_normal(t.shape)
+
+    model = MetaRNN(n_in=n_in, n_hidden=n_hidden, n_out=n_out,
+                    learning_rate=0.001, learning_rate_decay=0.999,
+                    n_epochs=400, activation='tanh')
+
+    model.fit(seq, targets, validation_frequency=1000)
+
+    plt.close('all')
+    fig = plt.figure()
+    ax1 = plt.subplot(211)
+    plt.plot(seq[0])
+    ax1.set_title('input')
+
+    ax2 = plt.subplot(212)
+    true_targets = plt.plot(targets[0])
+
+    guess = model.predict(seq[0])
+    guessed_targets = plt.plot(guess, linestyle='--')
+    for i, x in enumerate(guessed_targets):
+        x.set_color(true_targets[i].get_color())
+    ax2.set_title('solid: true output, dashed: model output')
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     t0 = time.time()
-    test_real()
+    #test_real()
     # problem takes more epochs to solve
     #test_binary(multiple_out=True, n_epochs=2400)
-    #test_softmax(n_epochs=250)
+    test_softmax(n_epochs=250)
+    #test_real_varlen()
     print "Elapsed time: %f" % (time.time() - t0)

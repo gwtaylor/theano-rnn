@@ -12,6 +12,7 @@ import time
 import os
 import datetime
 import cPickle as pickle
+from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
@@ -506,7 +507,7 @@ class MetaRNN(BaseEstimator):
 
         if optimizer == 'sgd':
 
-            updates = {}
+            updates = OrderedDict()
             theta = self.rnn.theta
             theta_update = self.rnn.theta_update
             # careful here, update to the shared variable
