@@ -664,6 +664,8 @@ def test_real_varlen():
                     learning_rate=0.001, learning_rate_decay=0.999,
                     n_epochs=400, activation='tanh')
 
+    # model will be aware of variable-length sequences
+    # since seq and targets are passed in as lists
     model.fit(seq, targets, validation_frequency=1000)
 
     plt.close('all')
