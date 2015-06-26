@@ -32,11 +32,12 @@ class RNN(object):
     softmax : single softmax out, use cross-entropy error
 
     """
-    def __init__(self, input, mask, n_in, n_hidden, n_out, activation=T.tanh,
-                 output_type='real'):
+    def __init__(self, input, mask, n_steps, n_in, n_hidden, n_out,
+                 activation=T.tanh, output_type='real'):
 
         self.input = input
         self.mask = mask
+        self.n_steps = n_steps
         self.activation = activation
         self.output_type = output_type
 
@@ -115,8 +116,8 @@ class RNN(object):
         self.theta_update = theano.shared(
             value=np.zeros(theta_shape, dtype=theano.config.floatX))
 
-        # recurrent function (using tanh activation function) and arbitrary output
-        # activation function
+        # recurrent function (using self.activation function) and
+        # arbitrary output activation function
         def step(x_t, h_tm1):
             h_t = self.activation(T.dot(x_t, self.W_in) + \
                                   T.dot(h_tm1, self.W) + self.bh)
@@ -172,7 +173,26 @@ class RNN(object):
             # compute prediction as class whose probability is maximal
             self.y_out = T.argmax(self.p_y_given_x, axis=-1)
             self.loss = lambda y: self.nll_multiclass(y)
-
+        elif self.output_type == 'single_step_real':
+            # special type of output where the model only needs to make
+            # a prediction on the last step
+            # note that the way step() it is configured, it will indeed
+            # output at every time step, but these outputs won't affect
+            # the loss nor gradients
+            # this is a simpler implementation that doesn't involve masks
+            # TODO: extend to single_step_binary, single_step_softmax
+            #
+            # even though the model produces an output, y at every time step
+            # we only care about the last time step
+            # however, the last time step may be different for each sequence
+            # therefore, we only index the output at the terminal steps
+            # this collapses the 3-d tensor y_t: n_steps x n_seq x n_out
+            # to a single output per sequence matrix: n_seq x n_out
+            # it uses Numpy advanced indexing and requires Numpy >= 1.8
+            self.y_pred = self.y_pred[self.n_steps - 1,
+                               T.arange(self.y_pred.shape[1]), :]
+            # note that in this case, y is a matrix: n_seq x n_out
+            self.loss = lambda y: T.mean((self.y_pred - y) **2)
         else:
             raise NotImplementedError
 
@@ -182,22 +202,23 @@ class RNN(object):
     # however, in each case when we take the mean error
     # we're including a bunch of artificially zero terms
     # this should be corrected
-
     def mse(self, y):
         # error between output and target
-        return T.mean(self.mask.dimshuffle(0, 1, 'x') * (self.y_pred - y) ** 2)
+        return T.mean(self.mask.dimshuffle(0, 1, 'x') *
+                      (self.y_pred - y) ** 2)
 
     def nll_binary(self, y):
         # negative log likelihood based on binary cross entropy error
-        return T.mean(T.nnet.binary_crossentropy(self.mask.dimshuffle(0, 1, 'x') * self.p_y_given_x,
-                                                 self.mask.dimshuffle(0, 1, 'x') * y))
+        return T.mean(T.nnet.binary_crossentropy(self.mask.dimshuffle(0,
+                        1, 'x') * self.p_y_given_x,
+                        self.mask.dimshuffle(0, 1, 'x') * y))
 
     def nll_multiclass(self, y):
         # negative log likelihood based on multiclass cross entropy error
         #
-        # Theano's advanced indexing is limited
-        # therefore we reshape our n_steps x n_seq x n_classes tensor3 of probs
-        # to a (n_steps * n_seq) x n_classes matrix of probs
+            # Theano's advanced indexing is limited
+        # therefore we reshape our n_steps x n_seq x n_classes tensor3 
+        # of probs to a (n_steps * n_seq) x n_classes matrix of probs
         # so that we can use advanced indexing (i.e. get the probs which
         # correspond to the true class)
         # the labels y also must be flattened when we do this to use the
@@ -216,7 +237,6 @@ class RNN(object):
         :param y: corresponds to a vector that gives for each example the
                   correct label
         """
-
         # check if y has same dimension of y_pred
         if y.ndim != self.y_out.ndim:
             raise TypeError('y should have the same shape as self.y_out',
@@ -264,13 +284,24 @@ class MetaRNN(BaseEstimator):
         # input (where first dimension is time)
         self.x = T.tensor3(name='x')
         self.m = T.matrix(name='m')
-        # target (where first dimension is time)
+
+        # used to support variable-len seq
+        # length n_seq vector: stores the index of the last step for each seq
+        self.n_steps = T.ivector(name='n_steps')
+
+        # target
         if self.output_type == 'real':
+            # n_steps x n_seq x n_out
             self.y = T.tensor3(name='y', dtype=theano.config.floatX)
         elif self.output_type == 'binary':
+            # n_steps x n_seq x n_out
             self.y = T.tensor3(name='y', dtype='int32')
         elif self.output_type == 'softmax':  # now it is a matrix (T x n_seq)
+            # n_steps x n_seq
             self.y = T.matrix(name='y', dtype='int32')
+        elif self.output_type == 'single_step_real':
+            # n_seq x n_out
+            self.y = T.matrix(name='y', dtype=theano.config.floatX)
         else:
             raise NotImplementedError
 
@@ -288,11 +319,13 @@ class MetaRNN(BaseEstimator):
         else:
             raise NotImplementedError
 
-        self.rnn = RNN(input=self.x, mask=self.m, n_in=self.n_in,
+        self.rnn = RNN(input=self.x, mask=self.m,
+                       n_steps=self.n_steps, n_in=self.n_in,
                        n_hidden=self.n_hidden, n_out=self.n_out,
-                       activation=activation, output_type=self.output_type)
+                       activation=activation,
+                       output_type=self.output_type)
 
-        if self.output_type == 'real':
+        if self.output_type in ['real']:
             self.predict = theano.function(inputs=[self.x, ],
                                            outputs=self.rnn.y_pred,
                                            mode=mode)
@@ -307,44 +340,88 @@ class MetaRNN(BaseEstimator):
                         outputs=self.rnn.p_y_given_x, mode=mode)
             self.predict = theano.function(inputs=[self.x, ],
                                 outputs=self.rnn.y_out, mode=mode)
+        elif self.output_type == 'single_step_real':
+            self.predict = theano.function(inputs=[self.x, self.n_steps],
+                                           outputs=self.rnn.y_pred,
+                                           mode=mode)
         else:
             raise NotImplementedError
 
     def shared_dataset(self, data_xy, borrow=True):
         """ Load the dataset into shared variables
         Data is passed in a list [x, y]
-        x (y) can either be:
-         1) a n_steps x n_seq x n_in (n_out) array
+
+        x can either be:
+         1) a n_steps x n_seq x n_in array
             here each sequence is the same length
-         2) a list of n_steps x n_in (n_out) arrays
+         2) a list of n_steps x n_in arrays
             here data can be variable-length (n_steps varies per sequence)
+
+        We support two paradigms for y:
+        i) model makes a prediction per time step
+        ii) model makes a single prediction at the last time step
+        therefore, y can either be:
+        1 a n_steps x n_seq x n_out array (scenario i)
+        2 a n_steps x n_seq array (scenario 1, single output)
+        3 a list of n_steps x n_out arrays (scenario i)
+        or;
+        4 a n_seq x n_out array (scenario ii)
         """
 
         data_x, data_y = data_xy
 
+        # first check x against two cases above
         if type(data_x) is list:
-            assert(type(data_y)) is list
+            # assume x is variable-length
             n_steps = [x.shape[0] for x in data_x]
             max_n_steps = max(n_steps)
             n_seq = len(data_x)
-            assert(len(data_y) == n_seq)
+            
             n_in = data_x[0].shape[1]
-            n_out = data_y[0].shape[1]
-            assert(max_n_steps == max(y.shape[0] for y in data_y))
+
+            # zero-padded data
             data_x_p = np.zeros((max_n_steps, n_seq, n_in))
-            data_y_p = np.zeros((max_n_steps, n_seq, n_out))
-            data_m_p = np.zeros((max_n_steps, n_seq))  # this is a binary mask
 
             for i in xrange(n_seq):
                 seq_len = data_x[i].shape[0]
                 data_x_p[:seq_len, i, :] = data_x[i]
+
+            data_x = data_x_p
+        else:
+            # n_steps is constant for all sequences
+            # this keeps the code consistent for variable and fixed-length
+            # sequences as input
+            # but we may want to avoid using n_steps altogether
+            # when sequences are the same length
+            n_steps = data_x.shape[0] * np.ones((data_x.shape[1],))
+            n_seq = data_x.shape[1]
+            n_in = data_x.shape[2]
+
+        # now check y against 4 cases above
+        if type(data_y) is list:
+            # prediction per time step, case 3
+            # variable length sequences
+            # use masking
+            assert(len(data_y) == n_seq)
+            n_out = data_y[0].shape[1]
+            assert(max_n_steps == max(y.shape[0] for y in data_y))
+
+            # pad the y data
+            data_y_p = np.zeros((max_n_steps, n_seq, n_out))
+            data_m_p = np.zeros((max_n_steps, n_seq))  # this is a binary mask
+
+            for i in xrange(n_seq):
+                seq_len = data_y[i].shape[0]
+
                 data_y_p[:seq_len, i, :] = data_y[i]
                 data_m_p[:seq_len, i] = 1
 
-            data_x = data_x_p
             data_y = data_y_p
             data_m = data_m_p
         else:
+            # in all other cases we can do the same, create a mask of all ones
+            # 1,2 inputs are all the same length, we don't use the mask
+            # 4 prediction made only at last time step, don't use the mask
             data_m = np.ones((data_x.shape[0], data_x.shape[1]))
 
 
@@ -356,14 +433,22 @@ class MetaRNN(BaseEstimator):
                                             dtype=theano.config.floatX),
                                  borrow=True)
 
+        
         shared_m = theano.shared(np.asarray(data_m,
                                             dtype=theano.config.floatX),
+                                     borrow=True)
+
+        # even though they're ints, we store as floats for GPU
+        shared_n_steps = theano.shared(np.asarray(n_steps,
+                                                  dtype=theano.config.floatX),
                                  borrow=True)
 
         if self.output_type in ('binary', 'softmax'):
-            return shared_x, T.cast(shared_y, 'int32'), shared_m
+            return (shared_x, T.cast(shared_y, 'int32'), shared_m,
+                    T.cast(shared_n_steps, 'int32'))
         else:
-            return shared_x, shared_y, shared_m
+            return (shared_x, shared_y, shared_m,
+                    T.cast(shared_n_steps, 'int32'))
 
     def __getstate__(self):
         """ Return state sequence."""
@@ -415,7 +500,8 @@ class MetaRNN(BaseEstimator):
         self.__setstate__(state)
         file.close()
 
-    def optional_output(self, train_set_x, show_norms=True, show_output=True):
+    def optional_output(self, train_set_x, train_set_ns,
+                        show_norms=True, show_output=True):
         """ Produces some debugging output. """
         if show_norms:
             norm_output = []
@@ -430,7 +516,18 @@ class MetaRNN(BaseEstimator):
                 output_fn = self.predict_proba
             else:
                 output_fn = self.predict
-            logger.info("sample output: " + \
+
+
+            # this is pretty nasty: # of arguments to self.predict
+            # depends on output_type, should fix this
+            if self.output_type in ['single_step_real',]:
+                logger.info("sample output: " + \
+                    str(output_fn(train_set_x.get_value(
+                        borrow=True)[:, 0, :][:, np.newaxis, :],
+                                  train_set_ns.eval()[0, 
+                                                      np.newaxis]).flatten()))
+            else:
+                logger.info("sample output: " + \
                     str(output_fn(train_set_x.get_value(
                         borrow=True)[:, 0, :][:, np.newaxis, :]).flatten()))
 
@@ -469,12 +566,12 @@ class MetaRNN(BaseEstimator):
         if X_test is not None:
             assert(Y_test is not None)
             self.interactive = True
-            test_set_x, test_set_y, test_set_m = \
+            test_set_x, test_set_y, test_set_m, test_set_ns = \
                         self.shared_dataset((X_test, Y_test))
         else:
             self.interactive = False
 
-        train_set_x, train_set_y, train_set_m = \
+        train_set_x, train_set_y, train_set_m, train_set_ns = \
                      self.shared_dataset((X_train, Y_train))
 
         if compute_zero_one:
@@ -521,36 +618,74 @@ class MetaRNN(BaseEstimator):
         get_batch_size = theano.function(inputs=[index, n_ex],
                                           outputs=effective_batch_size)
 
-        compute_train_error = theano.function(inputs=[index, n_ex],
-            outputs=self.rnn.loss(self.y),
-            givens={self.x: train_set_x[:, batch_start:batch_stop],
-                    self.y: train_set_y[:, batch_start:batch_stop],
-                    self.m: train_set_m[:, batch_start:batch_stop]},
-            mode=mode)
-
-        if compute_zero_one:
-            compute_train_zo = theano.function(inputs=[index, n_ex],
-            outputs=self.rnn.errors(self.y),
-            givens={self.x: train_set_x[:, batch_start:batch_stop],
-                    self.y: train_set_y[:, batch_start:batch_stop],
-                    self.m: train_set_m[:, batch_start:batch_stop]},
-            mode=mode)
-
-        if self.interactive:
-            compute_test_error = theano.function(inputs=[index, n_ex],
+        if self.output_type in ['single_step_real',]:
+            # y is configured differently, matrix not tensor
+            compute_train_error = theano.function(inputs=[index, n_ex],
                 outputs=self.rnn.loss(self.y),
-                givens={self.x: test_set_x[:, batch_start:batch_stop],
-                        self.y: test_set_y[:, batch_start:batch_stop],
+                givens={self.x: train_set_x[:, batch_start:batch_stop],
+                        self.y: train_set_y[batch_start:batch_stop],
+                        self.n_steps: train_set_ns[batch_start:batch_stop]}, 
+                                                  mode=mode)
+        else:
+            compute_train_error = theano.function(inputs=[index, n_ex],
+                outputs=self.rnn.loss(self.y),
+                givens={self.x: train_set_x[:, batch_start:batch_stop],
+                        self.y: train_set_y[:, batch_start:batch_stop],
                         self.m: train_set_m[:, batch_start:batch_stop]},
                 mode=mode)
 
-            if compute_zero_one:
-                compute_test_zo = theano.function(inputs=[index, n_ex],
+        if compute_zero_one:
+            if self.output_type in ['single_step_real',]:
+                # y is configured differently, matrix not tensor
+                compute_train_zo = theano.function(inputs=[index, n_ex],
+                    outputs=self.rnn.errors(self.y),
+                    givens={self.x: train_set_x[:, batch_start:batch_stop],
+                            self.y: train_set_y[batch_start:batch_stop],
+                            self.n_steps: train_set_ns[batch_start:batch_stop]},
+                    mode=mode)
+            else:
+                compute_train_zo = theano.function(inputs=[index, n_ex],
+                    outputs=self.rnn.errors(self.y),
+                    givens={self.x: train_set_x[:, batch_start:batch_stop],
+                            self.y: train_set_y[:, batch_start:batch_stop],
+                            self.m: train_set_m[:, batch_start:batch_stop]},
+                    mode=mode)
+
+        if self.interactive:
+            if self.output_type in ['single_step_real',]:
+                # y is configured differently, matrix not tensor
+                compute_test_error = theano.function(inputs=[index, n_ex],
+                    outputs=self.rnn.loss(self.y),
+                    givens={self.x: test_set_x[:, batch_start:batch_stop],
+                            self.y: test_set_y[batch_start:batch_stop],
+                            self.n_steps: train_set_ns[batch_start:batch_stop]},
+                    mode=mode)
+            else:
+                compute_test_error = theano.function(inputs=[index, n_ex],
                     outputs=self.rnn.errors(self.y),
                     givens={self.x: test_set_x[:, batch_start:batch_stop],
                             self.y: test_set_y[:, batch_start:batch_stop],
-                            self.m: train_set_m[:, batch_start:batch_stop]},
-                            mode=mode)
+                            self.m: test_set_m[:, batch_start:batch_stop]},
+                    mode=mode)
+
+
+            if compute_zero_one:
+                if self.output_type in ['single_step_real',]:
+                    # y is configured differently, matrix not tensor
+                    compute_test_zo = theano.function(inputs=[index, n_ex],
+                        outputs=self.rnn.errors(self.y),
+                        givens={self.x: test_set_x[:, batch_start:batch_stop],
+                                self.y: test_set_y[batch_start:batch_stop],
+                                self.n_steps: 
+                                train_set_ns[batch_start:batch_stop]},
+                        mode=mode)
+                else:
+                    compute_test_zo = theano.function(inputs=[index, n_ex],
+                        outputs=self.rnn.errors(self.y),
+                        givens={self.x: test_set_x[:, batch_start:batch_stop],
+                                self.y: test_set_y[:, batch_start:batch_stop],
+                                self.m: test_set_m[:, batch_start:batch_stop]},
+                        mode=mode)
 
         self.get_norms = {}
         for param in self.rnn.params:
@@ -576,13 +711,23 @@ class MetaRNN(BaseEstimator):
             # compiling a Theano function `train_model` that returns the
             # cost, but in the same time updates the parameter of the
             # model based on the rules defined in `updates`
-            train_model = theano.function(inputs=[index, n_ex, l_r, mom],
-                outputs=cost,
-                updates=updates,
-                givens={self.x: train_set_x[:, batch_start:batch_stop],
-                        self.y: train_set_y[:, batch_start:batch_stop],
-                        self.m: train_set_m[:, batch_start:batch_stop]},
-                mode=mode)
+            if self.output_type in ['single_step_real']:
+                # y is configured differently, matrix not tensor
+                train_model = theano.function(inputs=[index, n_ex, l_r, mom],
+                    outputs=cost,
+                    updates=updates,
+                    givens={self.x: train_set_x[:, batch_start:batch_stop],
+                            self.y: train_set_y[batch_start:batch_stop],
+                            self.n_steps: train_set_ns[batch_start:batch_stop]},
+                    mode=mode)
+            else:
+                train_model = theano.function(inputs=[index, n_ex, l_r, mom],
+                    outputs=cost,
+                    updates=updates,
+                    givens={self.x: train_set_x[:, batch_start:batch_stop],
+                            self.y: train_set_y[:, batch_start:batch_stop],
+                            self.m: train_set_m[:, batch_start:batch_stop]},
+                    mode=mode)
 
             ###############
             # TRAIN MODEL #
@@ -673,7 +818,8 @@ class MetaRNN(BaseEstimator):
                                                          this_train_loss,
                                                          self.learning_rate))
 
-                        self.optional_output(train_set_x, show_norms,
+                        self.optional_output(train_set_x,
+                                             train_set_ns, show_norms,
                                              show_output)
 
                 self.learning_rate *= self.learning_rate_decay
@@ -691,21 +837,40 @@ class MetaRNN(BaseEstimator):
         elif optimizer == 'cg' or optimizer == 'bfgs' \
                  or optimizer == 'l_bfgs_b':
             # compile a theano function that returns the cost of a minibatch
-            batch_cost = theano.function(inputs=[index, n_ex],
-                outputs=cost,
-                givens={self.x: train_set_x[:, batch_start:batch_stop],
-                        self.y: train_set_y[:, batch_start:batch_stop],
-                        self.m: train_set_m[:, batch_start:batch_stop]},
-                mode=mode, name="batch_cost")
+            if self.output_type in ['single_step_real']:
+                # y is configured differently, matrix not tensor
+                batch_cost = theano.function(inputs=[index, n_ex],
+                    outputs=cost,
+                    givens={self.x: train_set_x[:, batch_start:batch_stop],
+                            self.y: train_set_y[batch_start:batch_stop],
+                            self.n_steps: train_set_ns[batch_start:batch_stop]},
+                    mode=mode, name="batch_cost")
+            else:
+                batch_cost = theano.function(inputs=[index, n_ex],
+                    outputs=cost,
+                    givens={self.x: train_set_x[:, batch_start:batch_stop],
+                            self.y: train_set_y[:, batch_start:batch_stop],
+                            self.m: train_set_m[:, batch_start:batch_stop]},
+                    mode=mode, name="batch_cost")
+
 
             # compile a theano function that returns the gradient of the
             # minibatch with respect to theta
-            batch_grad = theano.function(inputs=[index, n_ex],
-                outputs=T.grad(cost, self.rnn.theta),
-                givens={self.x: train_set_x[:, batch_start:batch_stop],
-                        self.y: train_set_y[:, batch_start:batch_stop],
-                        self.m: train_set_m[:, batch_start:batch_stop]},
-                mode=mode, name="batch_grad")
+            if self.output_type in ['single_step_real']:
+                # y is configured differently, matrix not tensor
+                batch_grad = theano.function(inputs=[index, n_ex],
+                    outputs=T.grad(cost, self.rnn.theta),
+                    givens={self.x: train_set_x[:, batch_start:batch_stop],
+                            self.y: train_set_y[batch_start:batch_stop],
+                            self.n_steps: train_set_ns[batch_start:batch_stop]},
+                    mode=mode, name="batch_grad")
+            else:
+                batch_grad = theano.function(inputs=[index, n_ex],
+                    outputs=T.grad(cost, self.rnn.theta),
+                    givens={self.x: train_set_x[:, batch_start:batch_stop],
+                            self.y: train_set_y[:, batch_start:batch_stop],
+                            self.m: train_set_m[:, batch_start:batch_stop]},
+                    mode=mode, name="batch_grad")
 
             # creates a function that computes the average cost on the training
             # set
@@ -790,7 +955,7 @@ class MetaRNN(BaseEstimator):
                             logger.info('epoch %i, train loss %f ' % \
                                         (self.epoch, this_train_loss))
 
-                    self.optional_output(train_set_x, show_norms, show_output)
+                    self.optional_output(train_set_x, train_set_ns, show_norms, show_output)
 
             ###############
             # TRAIN MODEL #
@@ -1013,8 +1178,8 @@ def test_real_varlen(n_epochs=1000):
     n_steps = np.random.uniform(low=n_steps_min, high=n_steps_max,
                                 size=(n_seq * n_batches,))
 
-    seq = [np.random.randn(n_steps[i], n_in) for i in n_steps]
-    targets = [np.zeros((n_steps[i], n_out)) for i in n_steps]
+    seq = [np.random.randn(i, n_in) for i in n_steps]
+    targets = [np.zeros((i, n_out)) for i in n_steps]
 
     for t, s in zip(targets, seq):
         t[1:, 0] = s[:-1, 3]  # delayed 1
@@ -1049,6 +1214,73 @@ def test_real_varlen(n_epochs=1000):
         x.set_color(true_targets[i].get_color())
     ax2.set_title('solid: true output, dashed: model output')
 
+def test_real_varlen_single_step(n_epochs=1000):
+    """Test RNN with real-valued outputs, variable-length sequences, and
+    a setup where the model only makes a prediction at the last step of
+    each time series."""
+    n_hidden = 10
+    n_in = 5
+    n_out = 3
+    n_steps_min = 5
+    n_steps_max = 15
+
+    n_seq = 10  # per batch
+    n_batches = 10
+
+    np.random.seed(0)
+
+    # simple lag test
+
+    # sample lengths for different sequences
+    n_steps = np.random.uniform(low=n_steps_min, high=n_steps_max,
+                                size=(n_seq * n_batches,))
+    
+    n_steps = n_steps.astype(np.int32, copy=False)
+
+    seq = [np.random.randn(i, n_in) for i in n_steps]
+    
+    temp_targets = [np.random.randn(i, n_out) for i in n_steps]
+    
+    targets = [np.zeros((n_out,)) for i in n_steps]
+    
+    for tt, t, s in zip(temp_targets, targets, seq):
+        tt[1:, 0] = s[:-1, 3]  # delayed 1
+        tt[1:, 1] = s[:-1, 2]  # delayed 1
+        tt[2:, 2] = s[:-2, 0]  # delayed 2
+
+        tt += 0.01 * np.random.standard_normal(t.shape)
+        t[:] = tt[-1,:]  # only predict the last step
+
+    # for single-step setting
+    # targets must be an array
+    targets = np.asarray(targets)
+
+    model = MetaRNN(n_in=n_in, n_hidden=n_hidden, n_out=n_out,
+                    learning_rate=0.01, learning_rate_decay=0.999,
+                    n_epochs=n_epochs, batch_size=n_seq, activation='tanh',
+                    L2_reg=1e-3, output_type='single_step_real')
+
+    model.fit(seq, targets, validate_every=100, optimizer='bfgs')
+    #model.fit(seq, targets, validate_every=10, optimizer='sgd')
+
+    plt.close('all')
+    fig = plt.figure()
+    ax1 = plt.subplot(211)
+    #plt.plot(seq[:, 0, :])
+    plt.plot(seq[0])
+    ax1.set_title('input')
+    ax2 = plt.subplot(212)
+        
+    guess = model.predict(seq[0][:, np.newaxis, :],
+                          np.atleast_1d(n_steps[0]))
+    
+    true_targets = plt.plot(np.arange(targets[0].shape[0]), targets[0], 'ro')
+    
+    guessed_targets = plt.plot(np.arange(guess.shape[1]),
+                               guess.squeeze(), 'b+')
+        
+    ax2.set_title('o: true output, +: model output')
+    ax2.set_xlim(np.asarray(ax2.get_xlim()) + [-0.05, 0.05])
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
@@ -1057,4 +1289,5 @@ if __name__ == "__main__":
     #test_binary(optimizer='sgd', n_epochs=1000)
     #test_softmax(n_epochs=250, optimizer='sgd')
     #test_real_varlen(n_epochs=1000)
+    #test_real_varlen_single_step(n_epochs=1000)
     print "Elapsed time: %f" % (time.time() - t0)
