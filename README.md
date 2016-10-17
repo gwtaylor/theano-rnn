@@ -33,6 +33,6 @@ training it with stochastic gradient descent, it trains it with
 ## Other implementations
 
 There are other Theano rnn implementations publicly available, for example:
-* [Razvan Pascanu's implementation](https://github.com/pascanur/RNN-theano)
-* Razvan also provides a [simple sketch](http://groups.google.com/group/theano-users/browse_thread/thread/39c755b93675f437). This was the starting point for this code. on the Theano-users list. 
-* [Matthias Zoehrer's implementation](https://github.com/mzoehr/Theano/tree/rnn_benchmark/benchmark/rnn)
+* [Razvan Pascanu's implementation](https://github.com/pascanur/trainingRNNs).
+* Razvan also provides a [simple sketch](http://groups.google.com/group/theano-users/browse_thread/thread/39c755b93675f437). This was the starting point for this code on the Theano-users list. 
+* [Matthias Zoehrer's implementation](https://github.com/mzoehr/Theano/tree/rnn_benchmark/benchmark/rnn).
